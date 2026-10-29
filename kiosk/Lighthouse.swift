@@ -196,6 +196,8 @@ final class CalendarFeed {
 
     /// Called every minute and whenever the calendar changes; only notifies when the answer changed.
     func refresh(force: Bool = false) {
+        // Accounts added in Internet Accounts don't reach a running store on their own; ask it to look again.
+        if granted { store.refreshSourcesIfNecessary() }
         let p = next()
         let key = p.map { "\($0["title"] ?? "")|\($0["start"] ?? "")|\($0["where"] ?? "")" } ?? ""
         if force || key != lastSent { lastSent = key; onChange?() }
