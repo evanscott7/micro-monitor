@@ -162,7 +162,9 @@ final class AgentStore {
 
 // MARK: - next calendar event
 
-/// The next timed event (not all-day, not declined) starting within the next hour, from every calendar in macOS Calendar.
+/// Timed events (not all-day, not declined) from every calendar in macOS Calendar that are still going on or
+/// still to come today. The page decides what to show: outside work hours only an event starting within the
+/// hour; during work hours the meeting or block you're in now, then the next one.
 final class CalendarFeed {
     let store = EKEventStore()
     private(set) var granted = false
@@ -180,26 +182,29 @@ final class CalendarFeed {
         }
     }
 
-    /// Payload for the page: {title, where, start (ms)} or nil. Ongoing events stay for 5 minutes after they start.
-    func next() -> [String: Any]? {
-        guard granted else { return nil }
-        let now = Date()
-        let pred = store.predicateForEvents(withStart: now.addingTimeInterval(-5 * 60), end: now.addingTimeInterval(60 * 60), calendars: nil)
-        let ev = store.events(matching: pred)
-            .filter { !$0.isAllDay && $0.startDate >= now.addingTimeInterval(-5 * 60) && $0.startDate <= now.addingTimeInterval(60 * 60) }
+    /// Payload for the page: [{title, where, calendar, start, end (ms)}], earliest first, ending after now and starting before midnight.
+    func events() -> [[String: Any]] {
+        guard granted else { return [] }
+        let now = Date(), midnight = Calendar.current.startOfDay(for: now).addingTimeInterval(24 * 3600)
+        let pred = store.predicateForEvents(withStart: now.addingTimeInterval(-12 * 3600), end: midnight, calendars: nil)
+        return store.events(matching: pred)
+            .filter { !$0.isAllDay && $0.endDate > now && $0.startDate < midnight }
             .filter { e in e.attendees?.first(where: { $0.isCurrentUser })?.participantStatus != .declined }
-            .min { $0.startDate < $1.startDate }
-        guard let ev else { return nil }
-        let place = (ev.location ?? "").split(separator: "\n").first.map(String.init) ?? ""
-        return ["title": ev.title ?? "Event", "where": place, "start": ev.startDate.timeIntervalSince1970 * 1000]
+            .sorted { $0.startDate < $1.startDate }
+            .prefix(20)
+            .map { ev in
+                let place = (ev.location ?? "").split(separator: "\n").first.map(String.init) ?? ""
+                return ["title": ev.title ?? "Event", "where": place, "calendar": ev.calendar?.title ?? "",
+                        "start": ev.startDate.timeIntervalSince1970 * 1000, "end": ev.endDate.timeIntervalSince1970 * 1000]
+            }
     }
 
-    /// Called every minute and whenever the calendar changes; only notifies when the answer changed.
+    /// Called every minute and whenever the calendar changes; only notifies when the list changed.
     func refresh(force: Bool = false) {
         // Accounts added in Internet Accounts don't reach a running store on their own; ask it to look again.
         if granted { store.refreshSourcesIfNecessary() }
-        let p = next()
-        let key = p.map { "\($0["title"] ?? "")|\($0["start"] ?? "")|\($0["where"] ?? "")" } ?? ""
+        let key = events().map { "\($0["title"] ?? "")|\($0["start"] ?? "")|\($0["end"] ?? "")|\($0["where"] ?? "")" }.joined(separator: ";")
+            + "#\(store.calendars(for: .event).count)"
         if force || key != lastSent { lastSent = key; onChange?() }
     }
 }
@@ -281,16 +286,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { pushAgents(); pushEvent() }
 
-    /// Send the next event (or null) to the page.
+    /// Send the rest of today's events to the page.
     func pushEvent() {
-        let next = calendar.next()
-        var json = "null"
-        if let p = next, let d = try? JSONSerialization.data(withJSONObject: p), let s = String(data: d, encoding: .utf8) { json = s }
-        // What the screen shows, plus which calendars macOS gives us, for debugging.
-        let debug: [String: Any] = ["granted": calendar.granted, "event": next ?? NSNull(),
+        let list = calendar.events()
+        let json = (try? JSONSerialization.data(withJSONObject: list)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        // What the screen gets, plus which calendars macOS gives us, for debugging.
+        let debug: [String: Any] = ["granted": calendar.granted, "events": list,
                                     "calendars": calendar.store.calendars(for: .event).map { "\($0.title) (\($0.source?.title ?? ""))" }]
         if let d = try? JSONSerialization.data(withJSONObject: debug, options: [.prettyPrinted]) { try? d.write(to: store.dir.appendingPathComponent("event.json")) }
-        webView.evaluateJavaScript("window.lighthouseSetEvent && window.lighthouseSetEvent(\(json), \(calendar.granted))")
+        webView.evaluateJavaScript("window.lighthouseSetEvents && window.lighthouseSetEvents(\(json), \(calendar.granted))")
     }
 
     /// Send the current agent list to the page (it switches out of demo data on the first push).

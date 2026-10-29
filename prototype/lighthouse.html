@@ -326,7 +326,7 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
         <h3>Simulate</h3>
         <p class="note">In the real build, agents report through Claude Code hooks and Grok Bot, events come from your calendar and the to-do from the to-do app. Here you set them by hand.</p>
         <div id="simRows"></div>
-        <div class="simrow"><div class="who">Calendar<small>Dentist checkup in 38 min</small></div><button class="chipbtn" id="evBtn">Event within the hour</button></div>
+        <div class="simrow"><div class="who">Calendar<small>Outside work hours: only events within the hour. Work hours: the meeting you're in, then the next.</small></div><button class="chipbtn" id="evBtn">Event in 38 min</button><button class="chipbtn" id="meetBtn">In a meeting</button></div>
         <div class="simrow"><div class="who">To-do<small>Order drip-line stakes</small></div><button class="chipbtn" id="todoBtn">Has a to-do</button></div>
         <div class="simrow"><div class="who">Quiet<small>Auto turns on an hour before bed. Drag the time past 9:30 PM to see it.</small></div><button class="chipbtn" data-quiet="auto">Auto</button><button class="chipbtn" data-quiet="on">On</button><button class="chipbtn" data-quiet="off">Off</button></div>
         <div class="scrub">
@@ -454,6 +454,7 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
     needs: { label: 'Agent needs you', st: { ripple: 'needs', web: 'working', grok: 'idle', mon: 'working' }, event: true, todo: true },
     done: { label: 'Agent just finished', st: { ripple: 'working', web: 'done', grok: 'idle', mon: 'working' }, event: true, todo: true },
     event: { label: 'Event within the hour', st: { ripple: 'working', web: 'idle', grok: 'idle', mon: 'working' }, event: true, todo: true },
+    meeting: { label: 'In a meeting (work hours)', st: { ripple: 'working', web: 'idle', grok: 'idle', mon: 'working' }, meeting: true, todo: true },
     todo: { label: 'Just a to-do', st: { ripple: 'idle', web: 'idle', grok: 'working', mon: 'idle' }, event: false, todo: true },
     calm: { label: 'All clear', st: { ripple: 'idle', web: 'idle', grok: 'idle', mon: 'idle' }, event: false, todo: false },
   };
@@ -461,7 +462,8 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
     const sc = SCEN[key];
     return {
       agents: AGENTS.map(a => ({ ...a, state: sc.st[a.id], since: Date.now() - (sc.st[a.id] === 'done' ? 4 : sc.st[a.id] === 'needs' ? 2 : 25) * 6e4 })),
-      event: sc.event ? { title: 'Dentist checkup', where: 'Ballard Dental', inMin: 38 } : null,
+      events: sc.meeting ? demoMeeting() : sc.event ? demoEvent() : [],
+      hours: sc.meeting ? true : undefined, // demo override for "is it work hours?"
       todo: sc.todo ? { text: 'Order drip-line stakes', list: 'Yard' } : null,
       work: false, dim: false, scrub: null, quiet: 'auto',
     };
@@ -532,6 +534,31 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
   }
   const STATE_TXT = { idle: 'Idle', working: 'Working', done: 'Finished', needs: 'Needs you' };
 
+  /* ── calendar ── */
+  // Work hours: weekdays 9–5, or any time "Home" is switched off (you're at work).
+  const WORK = { days: [1, 2, 3, 4, 5], start: 9 * 60, end: 17 * 60 };
+  function isWorkHours(S) {
+    if (S.hours !== undefined) return S.hours;
+    if (S.work) return true;
+    const t = clockNow(S), m = t.getHours() * 60 + t.getMinutes();
+    return WORK.days.includes(t.getDay()) && m >= WORK.start && m < WORK.end;
+  }
+  // Which events to show. Work hours: the meeting or block you're in, then the next one today.
+  // Otherwise: only an event starting within the hour (kept for 5 minutes after it starts).
+  function calendarItems(S) {
+    const t = +clockNow(S), evs = (S.events || []).filter(e => e.end > t).sort((a, b) => a.start - b.start);
+    const current = evs.filter(e => e.start <= t).sort((a, b) => b.start - a.start)[0]; // latest-started if overlapping
+    const next = evs.find(e => e.start > t && new Date(e.start).toDateString() === new Date(t).toDateString());
+    if (isWorkHours(S)) return [current, next].filter(Boolean);
+    if (next && next.start - t <= 60 * 6e4) return [next];
+    if (current && t - current.start <= 5 * 6e4) return [current];
+    return [];
+  }
+  // "🔒 Evan's Focus Time 🔒" → "Evan's Focus Time": emoji and symbols at the ends read as noise on the screen.
+  const cleanTitle = (s) => String(s || 'Event').replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}).!?']+$/gu, '').trim() || 'Event';
+  function demoEvent() { const n = Date.now(); return [{ title: 'Dentist checkup', where: 'Ballard Dental', start: n + 38 * 6e4, end: n + 68 * 6e4 }]; }
+  function demoMeeting() { const n = Date.now(); return [{ title: '🔒 Focus Time 🔒', where: '', start: n - 50 * 6e4, end: n + 70 * 6e4 }, { title: 'Design review', where: 'Zoom', start: n + 100 * 6e4, end: n + 130 * 6e4 }]; }
+
   /* ── priority ── */
   function queue(S) {
     const q = [];
@@ -539,7 +566,7 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
       S.agents.filter(a => a.state === 'needs').forEach(a => q.push({ kind: 'needs', a }));
       S.agents.filter(a => a.state === 'done').forEach(a => q.push({ kind: 'done', a }));
     }
-    if (S.event) q.push({ kind: 'event', e: S.event });
+    calendarItems(S).forEach(e => q.push({ kind: 'event', e }));
     if (S.todo) q.push({ kind: 'todo', td: S.todo });
     if (!q.length) q.push({ kind: 'calm' });
     return q;
@@ -550,11 +577,14 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
     if (it.kind === 'needs') return { eb: `Needs you · ${it.a.src}`, title: it.a.name, disp: true, sent: it.a.why, meta: `Waiting ${ago(it.a.since).replace(' ago', '')}`, shape: it.a, short: `${it.a.name} needs you` };
     if (it.kind === 'done') return { eb: `Just finished · ${it.a.src}`, title: it.a.name, disp: true, sent: it.a.why, meta: `Finished ${ago(it.a.since)}`, shape: it.a, short: `${it.a.name} finished` };
     if (it.kind === 'event') {
-      // Real events carry a start time; demo events carry minutes from now.
-      const at = it.e.start ? new Date(it.e.start) : new Date(+t + it.e.inMin * 6e4);
-      const mins = Math.round((at - t) / 6e4), when = mins <= 0 ? 'now' : `in ${mins} min`;
-      const meta = [`${fmt(at)} ${ampm(at)}`, it.e.where].filter(Boolean).join(' · ');
-      return { eb: `Next · ${when}`, title: it.e.title, sent: null, meta, short: `${it.e.title} ${when}` };
+      const at = new Date(it.e.start), end = new Date(it.e.end), title = cleanTitle(it.e.title);
+      if (at <= t) { // you're in it right now
+        const meta = [`${dur(end - t).toLowerCase()} left`, it.e.where].filter(Boolean).join(' · ');
+        return { eb: `Now · until ${fmt(end)} ${ampm(end)}`, title, sent: null, meta, short: `${title} until ${fmt(end)}` };
+      }
+      const mins = Math.round((at - t) / 6e4), when = mins <= 60 ? `in ${mins} min` : `at ${fmt(at)} ${ampm(at)}`;
+      const meta = [`${fmt(at)}–${fmt(end)} ${ampm(end)}`, it.e.where].filter(Boolean).join(' · ');
+      return { eb: `Next · ${when}`, title, sent: null, meta, short: `${title} ${when}` };
     }
     if (it.kind === 'todo') return { eb: 'One thing', title: it.td.text, sent: null, meta: `${it.td.list} · from your list`, short: it.td.text };
     return { eb: 'All clear', title: 'Nothing needs you', sent: null, meta: S.work ? 'Work mode · agents wait until later' : S.agents.length ? `${S.agents.length} agent${S.agents.length > 1 ? 's' : ''} quiet` : 'No agents running', short: 'All clear' };
@@ -571,7 +601,9 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
     const q = queue(S), it = q[0], x = itemText(it, S);
     const icon = x.shape ? shapeSVG(x.shape.shape, it.kind === 'needs' ? 'needs-ink' : 'done', 30).replace('needs-ink', 'needs') : EB_ICON[it.kind];
     const iconFix = it.kind === 'needs' ? icon.replace(/var\(--terra\)/g, 'var(--terra-ink)').replace('class="shape needs"', 'class="shape"') : icon;
-    const then = opts.then && q[1] ? `<div class="then sent">Then: ${esc(itemText(q[1], S).short)}</div>` : '';
+    // then: true = always show the second item; 'events' = only when you're in a meeting and another follows.
+    const showThen = opts.then && q[1] && (opts.then !== 'events' || (it.kind === 'event' && q[1].kind === 'event'));
+    const then = showThen ? `<div class="then sent">Then: ${esc(itemText(q[1], S).short)}</div>` : '';
     return `<button class="fcard k-${it.kind} ${size}" data-act="focus" style="${style}">
       <span class="eb lbl">${iconFix}<span>${esc(x.eb)}</span></span>
       <span class="ft ${x.disp ? 'disp' : 'sent'}" style="--fit:${x.disp ? fitFor(x.title, size) : 1}" data-key="${it.kind}:${esc(x.title)}">${esc(x.title)}</span>
@@ -599,7 +631,7 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
       render: (S, m) => {
         const dt = dayText(m), onTerra = queue(S)[0].kind === 'needs';
         const ink = onTerra ? 'var(--terra-ink)' : 'var(--text-2)';
-        return fcardHTML(S, 'xl', 'left:24px;top:24px;width:1232px;height:556px;padding:40px 44px;') +
+        return fcardHTML(S, 'xl', 'left:24px;top:24px;width:1232px;height:556px;padding:40px 44px;', { then: 'events' }) +
           `<button class="arcbox" data-act="day" style="left:928px;top:36px;width:304px;height:126px;padding:10px 12px 0;border-radius:16px;color:${ink}">${arcSVG(m, 280, 72, 48, 16, onTerra ? { day: 'rgba(34,16,15,.4)' } : {})}<span class="lbl" style="display:block;text-align:center;font-size:16px;white-space:nowrap;margin-top:10px">${dt.big} ${dt.small}</span></button>` +
           `<div class="abs" style="left:44px;top:606px">${shapesHTML(S, 70, 30)}</div>` +
           btn('menu', 'left:1152px;top:592px;width:104px;height:104px', ICO.menu, 'btn-ghost');
@@ -908,7 +940,7 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
   /* simulator */
   function renderSim() {
     $('#simRows').innerHTML = S.agents.map(a => `<div class="simrow"><div class="who">${shapeSVG(a.shape, a.state, 26)}<span>${a.name}<small>${a.src} · ${a.job}</small></span></div>${['idle', 'working', 'done', 'needs'].map(s => `<button class="chipbtn ${s === 'needs' ? 'hot' : ''} ${a.state === s ? 'on' : ''}" data-sim="${a.id}:${s}">${STATE_TXT[s]}</button>`).join('')}</div>`).join('');
-    $('#workBtn').classList.toggle('on', S.work); $('#evBtn').classList.toggle('on', !!S.event); $('#todoBtn').classList.toggle('on', !!S.todo);
+    $('#workBtn').classList.toggle('on', S.work); $('#evBtn').classList.toggle('on', S.events.length === 1 && S.events[0].start > Date.now()); $('#meetBtn').classList.toggle('on', S.hours === true); $('#todoBtn').classList.toggle('on', !!S.todo);
     $$('[data-quiet]').forEach(b => b.classList.toggle('on', b.dataset.quiet === S.quiet));
     $$('[data-use]').forEach(b => { b.classList.toggle('on', b.dataset.use === variant); b.textContent = b.dataset.use === variant ? 'In the prototype' : 'Use in prototype'; });
   }
@@ -919,7 +951,8 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
     if (view === 'menu') $$('#menuRows .mrow').forEach((r, i) => { r.querySelector('.sub').textContent = menuItems()[i].s; });
   }
   $('#simRows').addEventListener('click', (e) => { const b = e.target.closest('[data-sim]'); if (!b) return; const [id, st] = b.dataset.sim.split(':'); const a = S.agents.find(x => x.id === id); if (a.state === st) return; a.state = st; a.since = Date.now(); syncAll(); });
-  $('#evBtn').onclick = () => { S.event = S.event ? null : { title: 'Dentist checkup', where: 'Ballard Dental', inMin: 38 }; syncAll(); };
+  $('#evBtn').onclick = () => { const on = S.events.length === 1 && S.events[0].start > Date.now(); S.events = on ? [] : demoEvent(); S.hours = undefined; syncAll(); };
+  $('#meetBtn').onclick = () => { const on = S.hours === true; S.events = on ? [] : demoMeeting(); S.hours = on ? undefined : true; syncAll(); };
   $('#todoBtn').onclick = () => { S.todo = S.todo ? null : { text: 'Order drip-line stakes', list: 'Yard' }; syncAll(); };
   $('#workBtn').onclick = () => { S.work = !S.work; syncAll(); };
   $$('[data-quiet]').forEach(b => b.onclick = () => { S.quiet = b.dataset.quiet; syncAll(); });
@@ -1057,17 +1090,17 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
   function scheduleMinute() { clearTimeout(minuteTimer); const d = new Date(); minuteTimer = setTimeout(() => { tickMinute(); scheduleMinute(); }, 60500 - (d.getSeconds() * 1000 + d.getMilliseconds())); }
 
   /* ── boot ── */
-  // The kiosk app pushes the next calendar event here: {title, where, start} or null. `granted` is false
+  // The kiosk app pushes the rest of today's events here: [{title, where, calendar, start, end}]. `granted` is false
   // until you allow calendar access; the screen then simply shows no event.
   let liveCal = false;
-  window.lighthouseSetEvent = (ev, granted) => {
-    liveCal = true; S.event = ev && ev.start ? ev : null; S.calendarGranted = !!granted;
+  window.lighthouseSetEvents = (list, granted) => {
+    liveCal = true; S.events = Array.isArray(list) ? list : []; S.calendarGranted = !!granted;
     syncAll();
   };
   // The kiosk app pushes real agents here (from Claude Code hooks). The first push ends demo mode:
   // demo agents, the sample event and the sample to-do all go away until those sources are wired up.
   window.lighthouseSetAgents = (list) => {
-    if (!live) { live = true; if (!liveCal) S.event = null; S.todo = null; }
+    if (!live) { live = true; if (!liveCal) S.events = []; S.todo = null; }
     S.agents = list.map(a => ({ ...a, why: a.why || '', job: a.job || '' }));
     if (featured && !S.agents.some(a => a.id === featured)) featured = null;
     if (view === 'agents' && !S.agents.length) { go('home'); return; }
