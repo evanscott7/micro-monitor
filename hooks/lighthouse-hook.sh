@@ -3,7 +3,12 @@
 # The Lighthouse app watches that file and turns it into agent shapes on the Wokyis screen.
 # Other agents (e.g. Grok Bot) can append the same shape with "src":"grok".
 mkdir -p "$HOME/.lighthouse"
-/usr/bin/jq -c '{
+input=$(cat)
+# A new prompt or the end of the session cancels any reply the screen was offering (see lighthouse-ask.sh).
+case "$(printf '%s' "$input" | /usr/bin/jq -r '.hook_event_name + " " + .session_id')" in
+  "UserPromptSubmit "*|"SessionEnd "*) rm -f "$HOME/.lighthouse/asks/$(printf '%s' "$input" | /usr/bin/jq -r .session_id).json" ;;
+esac
+printf '%s' "$input" | /usr/bin/jq -c '{
   t: now,
   src: "claude",
   ev: .hook_event_name,

@@ -73,10 +73,10 @@ button { font: inherit; color: inherit; cursor: pointer; }
 /* "working" dot matrix: agents fill with it while they work; anything you hover gets it too.
    A canvas (see the dot engine in the script) draws white dots behind the content: a faint shimmering field,
    plus a wake behind the pointer that spreads and fades like water. Agents get the dots inside their shape. */
-.lrow, .bigbtn, .chipbtn, .fopt, .ag { position: relative; }
-.fcard, .btn-s, .arcbox, .ag, .mrow, .lrow, .bigbtn, .chipbtn, .fopt { isolation: isolate; }
+.lrow, .bigbtn, .chipbtn, .fopt, .ag, .abtn { position: relative; }
+.fcard, .btn-s, .arcbox, .ag, .mrow, .lrow, .bigbtn, .chipbtn, .fopt, .abtn { isolation: isolate; }
 .dotcv { position: absolute; pointer-events: none; }
-:is(.fcard, .btn-s, .arcbox, .mrow, .lrow, .bigbtn, .chipbtn, .fopt):hover:not(:disabled) { outline: 2px solid rgba(243,241,251,.6); outline-offset: -2px; }
+:is(.fcard, .btn-s, .arcbox, .mrow, .lrow, .bigbtn, .chipbtn, .fopt, .abtn):hover:not(:disabled) { outline: 2px solid rgba(243,241,251,.6); outline-offset: -2px; }
 .chip-s, .arcbox.chip-s { background: rgba(16,12,19,.84); box-shadow: inset 0 0 0 1px rgba(243,241,251,.14); border-radius: 18px; color: var(--text); }
 .chip-s:hover, .arcbox.chip-s:hover { background: rgba(16,12,19,.92); }
 
@@ -151,6 +151,27 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .bigbtn.cancel { flex: 1; background: var(--surface); color: var(--text); box-shadow: inset 0 0 0 1px var(--hair); }
 .bigbtn.cancel .lbl { font-size: 28px; }
 .bigbtn:disabled { filter: saturate(.3) brightness(.7); cursor: default; }
+
+/* ANSWER VIEW: a question from an agent, answered with big buttons (or typed) */
+#askView, #replyView { padding: 24px; }
+#askView .fcard { position: relative; width: 100%; height: 270px; padding: 28px 36px; }
+.askq { margin-top: auto; font-size: 46px; font-weight: 600; line-height: 1.1; letter-spacing: -.01em;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.askq.long { font-size: 30px; font-weight: 500; line-height: 1.25; -webkit-line-clamp: 4; }
+.askd { margin-top: 10px; font-size: 24px; opacity: .78; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.askgrid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-top: 12px; }
+.abtn { grid-column: span 3; height: 112px; border: 0; border-radius: 18px; padding: 0 28px; min-width: 0;
+  display: flex; flex-direction: column; justify-content: center; align-items: flex-start; text-align: left;
+  background: var(--surface); box-shadow: inset 0 0 0 1px var(--hair); color: var(--text); }
+.abtn .t { font-size: 32px; font-weight: 600; line-height: 1.05; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.abtn .s { font-size: 21px; opacity: .72; margin-top: 6px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.abtn.third { grid-column: span 2; } .abtn.full { grid-column: span 6; }
+.abtn.go { background: linear-gradient(160deg, var(--green-1), var(--green-2)); }
+.abtn.stop { background: linear-gradient(170deg, var(--r3), var(--r4)); }
+.abtn.sel { box-shadow: inset 0 0 0 3px var(--text); }
+.abtn.sel .t::before { content: "● "; }
+.abtn .lbl { font-size: 22px; }
 
 /* DAY VIEW */
 #dayView { padding: 24px; }
@@ -311,6 +332,15 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
             </div>
             <div class="caprow"><button class="bigbtn save" id="capSave" disabled>SAVE</button><button class="bigbtn cancel" id="capCancel"><span class="lbl">Cancel</span></button></div>
           </section>
+          <section class="layer" id="askView" hidden><div class="fcard" id="askCard"></div><div class="askgrid" id="askGrid"></div></section>
+          <section class="layer" id="replyView" hidden>
+            <div class="capcard" id="replyCard">
+              <div class="lbl" id="replyLabel">Reply</div>
+              <textarea id="replyText" placeholder="Type your answer…" aria-label="Your answer"></textarea>
+              <div class="hint">Connect a keyboard to type. <kbd>Return</kbd> sends &nbsp;·&nbsp; <kbd>Shift Return</kbd> new line &nbsp;·&nbsp; <kbd>Esc</kbd> goes back.</div>
+            </div>
+            <div class="caprow"><button class="bigbtn save" id="replySend" disabled>SEND</button><button class="bigbtn cancel" id="replyBack"><span class="lbl">Back</span></button></div>
+          </section>
           <section class="layer" id="dayView" hidden>
             <div class="daybig" id="dayBig"></div>
             <div class="daystats" id="dayStats"></div>
@@ -451,17 +481,27 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
     { id: 'mon', name: 'MONITOR', shape: 'hex', src: 'Claude Code', job: 'This screen', why: 'Wants you to pick a home layout' },
   ];
   const SCEN = {
-    needs: { label: 'Agent needs you', st: { ripple: 'needs', web: 'working', grok: 'idle', mon: 'working' }, event: true, todo: true },
-    done: { label: 'Agent just finished', st: { ripple: 'working', web: 'done', grok: 'idle', mon: 'working' }, event: true, todo: true },
+    needs: { label: 'Agent needs you', st: { ripple: 'needs', web: 'working', grok: 'idle', mon: 'working' }, event: true, todo: true, ask: { ripple: 'permission' } },
+    question: { label: 'Agent asks a question', st: { ripple: 'working', web: 'idle', grok: 'idle', mon: 'needs' }, event: false, todo: true, ask: { mon: 'question' } },
+    done: { label: 'Agent just finished', st: { ripple: 'working', web: 'done', grok: 'idle', mon: 'working' }, event: true, todo: true, ask: { web: 'reply' } },
     event: { label: 'Event within the hour', st: { ripple: 'working', web: 'idle', grok: 'idle', mon: 'working' }, event: true, todo: true },
     meeting: { label: 'In a meeting (work hours)', st: { ripple: 'working', web: 'idle', grok: 'idle', mon: 'working' }, meeting: true, todo: true },
     todo: { label: 'Just a to-do', st: { ripple: 'idle', web: 'idle', grok: 'working', mon: 'idle' }, event: false, todo: true },
     calm: { label: 'All clear', st: { ripple: 'idle', web: 'idle', grok: 'idle', mon: 'idle' }, event: false, todo: false },
   };
+  // Demo versions of what hooks/lighthouse-ask.sh writes for a session.
+  function demoAsk(a, kind) {
+    const base = { id: `demo-${a.id}-${kind}`, sid: a.id, kind, t: Date.now() / 1000 };
+    if (kind === 'permission') return { ...base, tool: 'Bash', summary: 'Run the test suite', detail: 'npm test -- --watch=false', canAlways: true };
+    if (kind === 'question') return { ...base, questions: [{ question: 'Which layout should be the default on the screen?', header: 'Layout', multiSelect: false,
+      options: [{ label: 'Focus', description: 'One card, calmest' }, { label: 'Split', description: 'Card plus a side column' },
+                { label: 'Rows', description: 'Stacked bars, most info' }, { label: 'Sky', description: 'Agents under the arc' }] }] };
+    return { ...base, last: 'Pine branch scroll art is ready to review. Want me to also add a reduced-motion version?' };
+  }
   function stateFrom(key) {
     const sc = SCEN[key];
     return {
-      agents: AGENTS.map(a => ({ ...a, state: sc.st[a.id], since: Date.now() - (sc.st[a.id] === 'done' ? 4 : sc.st[a.id] === 'needs' ? 2 : 25) * 6e4 })),
+      agents: AGENTS.map(a => ({ ...a, state: sc.st[a.id], since: Date.now() - (sc.st[a.id] === 'done' ? 4 : sc.st[a.id] === 'needs' ? 2 : 25) * 6e4, ask: sc.ask?.[a.id] ? demoAsk(a, sc.ask[a.id]) : undefined })),
       events: sc.meeting ? demoMeeting() : sc.event ? demoEvent() : [],
       hours: sc.meeting ? true : undefined, // demo override for "is it work hours?"
       todo: sc.todo ? { text: 'Order drip-line stakes', list: 'Yard' } : null,
@@ -752,7 +792,7 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
   }
 
   /* ── views ── */
-  const views = { home: $('#home'), menu: $('#menu'), agents: $('#agentsView'), capture: $('#captureView'), day: $('#dayView'), layout: $('#layoutView') };
+  const views = { ask: $('#askView'), reply: $('#replyView'), home: $('#home'), menu: $('#menu'), agents: $('#agentsView'), capture: $('#captureView'), day: $('#dayView'), layout: $('#layoutView') };
   async function go(next) {
     if (busy || next === view) return;
     if (next === 'agents' && !S.agents.length) { toast('No agents running right now'); return; }
@@ -778,6 +818,8 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
     if (v === 'capture') { setTimeout(() => $('#capText').focus({ preventScroll: true }), D(120)); return Promise.all([$('#capcard').animate([{ opacity: 0, transform: 'scale(.96)' }, { opacity: 1, transform: 'none' }], { duration: D(260), easing: EASE_OUT }).finished, cascade($$('#captureView .bigbtn'), 70, 180, 'in')]); }
     if (v === 'day') { renderDay(); return cascade([$('#dayBig'), ...$$('#dayView .stat'), $('#dayView .back')], 55, 200, 'in'); }
     if (v === 'layout') { renderLayouts(); return cascade($$('#layoutRows .lrow'), 55, 180, 'in'); }
+    if (v === 'ask') { renderAsk(); return Promise.all([$('#askCard').animate([{ opacity: 0, transform: 'scale(.96)' }, { opacity: 1, transform: 'none' }], { duration: D(260), easing: SPRING }).finished, cascade($$('#askGrid .abtn'), 50, 180, 'in')]); }
+    if (v === 'reply') { openReply(); return cascade([$('#replyCard'), ...$$('#replyView .bigbtn')], 60, 200, 'in'); }
   }
   function renderLayouts() {
     const bgs = ['var(--r1)', 'var(--r2)', 'var(--r3)', 'var(--r4)', 'var(--r5)'];
@@ -894,13 +936,17 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
     if (act === 'agents') { featured = t.dataset.id || null; return go('agents'); }
     if (act === 'focus' || act === 'focus2') {
       const q = queue(S), it = q[act === 'focus' ? 0 : 1]; if (!it) return;
-      if (it.kind === 'needs' || it.kind === 'done') { featured = it.a.id; return go('agents'); }
+      if (it.kind === 'needs' || it.kind === 'done') { featured = it.a.id; return go(it.a.ask ? 'ask' : 'agents'); }
       if (it.kind === 'event') { try { window.webkit?.messageHandlers?.calendar?.postMessage('open'); } catch {} return toast('Opening Calendar on the big screen'); }
       if (it.kind === 'todo') return toast('The to-do app comes next');
       return;
     }
     if (t.id === 'capSave') return save();
     if (t.id === 'capCancel') return go('home');
+    if (t.id === 'card' && featuredAgent()?.ask) { featured = featuredAgent().id; return go('ask'); }
+    if (t.dataset.ans) return answerClick(t);
+    if (t.id === 'replySend') return sendReply();
+    if (t.id === 'replyBack') return go('ask');
     if (t.id === 'card') {
       const a = featuredAgent();
       const native = window.webkit?.messageHandlers?.agent;
@@ -935,7 +981,111 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
       return go(k);
     }
   });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && view !== 'home' && view !== 'capture') go('home'); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !['home', 'capture', 'reply'].includes(view)) go('home'); });
+
+  /* ── answering an agent from the screen ──
+     An agent's `ask` comes from hooks/lighthouse-ask.sh: a permission prompt, a multiple-choice question,
+     or (after it finishes) a chance to reply. Clickable answers come first; typing is always one tap away. */
+  let askState = null; // { id, sid, kind, qi (question index), answers, picked (multi-select), replyFor }
+  const askAgent = () => S.agents.find(a => a.id === featured && a.ask) || S.agents.find(a => a.ask && a.state === 'needs') || S.agents.find(a => a.ask);
+  const ICON_BACK = '<span class="lbl">Back</span>';
+  function renderAsk() {
+    const a = askAgent(); if (!a) return go('home');
+    const ask = a.ask;
+    if (!askState || askState.id !== ask.id) askState = { id: ask.id, sid: a.id, kind: ask.kind, qi: 0, answers: {}, picked: [] };
+    const card = $('#askCard'), grid = $('#askGrid');
+    const eb = (txt) => `<span class="eb lbl">${shapeSVG(a.shape, 'idle', 30).replace('var(--text-3)', 'currentColor')}<span>${esc(a.name)} · ${txt}</span></span>`;
+    const b = (cls, data, t, s = '') => `<button class="abtn ${cls}" data-ans="${data}"><span class="t">${t}</span>${s ? `<span class="s">${esc(s)}</span>` : ''}</button>`;
+    if (ask.kind === 'permission') {
+      card.className = 'fcard k-needs';
+      card.innerHTML = eb(`Wants to use ${esc(ask.tool || 'a tool')}`) + `<span class="askq sent">${esc(ask.summary || ask.detail || 'Run a command')}</span>` +
+        (ask.detail && ask.detail !== ask.summary ? `<span class="askd">${esc(ask.detail)}</span>` : '');
+      grid.innerHTML = b('go', 'allow', 'Allow', 'Just this once') +
+        (ask.canAlways ? b('go', 'always', 'Always allow', 'Don’t ask again for this') : b('', 'type', 'Type a reply', 'Deny and tell it why')) +
+        b('stop', 'deny', 'Deny') + (ask.canAlways ? b('', 'type', 'Type a reply', 'Deny and tell it why') : b('', 'back', ICON_BACK)) +
+        (ask.canAlways ? b('full', 'back', ICON_BACK) : '');
+    } else if (ask.kind === 'question') {
+      const qs = ask.questions || [], q = qs[askState.qi] || qs[0] || { question: 'Question', options: [] };
+      card.className = 'fcard k-needs';
+      card.innerHTML = eb(`${esc(q.header || 'Asks')}${qs.length > 1 ? ` · ${askState.qi + 1} of ${qs.length}` : ''}`) + `<span class="askq sent">${esc(q.question)}</span>`;
+      const opts = (q.options || []).slice(0, 4);
+      grid.innerHTML = opts.map((o, i) => b(askState.picked.includes(o.label) ? 'sel' : '', `opt:${i}`, esc(o.label), o.description || '')).join('') +
+        (opts.length % 2 ? b('', 'type', 'Type an answer') : '') +
+        (q.multiSelect ? b('third go', 'done', `Done${askState.picked.length ? ` (${askState.picked.length})` : ''}`) + (opts.length % 2 ? '' : b('third', 'type', 'Type')) + b('third', 'back', ICON_BACK)
+                       : (opts.length % 2 ? b('', 'back', ICON_BACK) : b('', 'type', 'Type an answer') + b('', 'back', ICON_BACK)));
+    } else {
+      card.className = 'fcard k-done';
+      card.innerHTML = eb('Finished · reply?') + `<span class="askq long sent">${esc(ask.last || a.why || 'Finished.')}</span>`;
+      grid.innerHTML = b('go', 'yes', 'Yes, go ahead') + b('', 'type', 'Type a reply') + b('', 'seen', 'Mark seen', 'Nothing to say') + b('', 'back', ICON_BACK);
+    }
+  }
+  function sendAnswer(payload, note) {
+    const a = S.agents.find(x => x.id === askState.sid);
+    try { window.webkit?.messageHandlers?.answer?.postMessage({ id: askState.id, sid: askState.sid, ...payload }); } catch {}
+    if (a) { // update right away; in the kiosk app the next push confirms it
+      delete a.ask;
+      if (!payload.dismiss) { a.state = 'working'; a.since = Date.now(); a.why = note; } else if (a.state === 'done') a.state = 'idle';
+    }
+    toast(payload.dismiss ? `Marked ${a?.name || 'it'} as seen` : `Sent to ${a?.name || 'the agent'}`);
+    askState = null; featured = null; syncAll(); return go('home');
+  }
+  function answerClick(t) {
+    const a = askAgent(), ask = a?.ask; if (!ask || !askState) return;
+    const k = t.dataset.ans;
+    if (k === 'back') { askState = null; return go('home'); }
+    if (k === 'type') return go('reply');
+    if (ask.kind === 'permission') {
+      if (k === 'allow') return sendAnswer({ behavior: 'allow', always: false }, 'Allowed from the screen');
+      if (k === 'always') return sendAnswer({ behavior: 'allow', always: true }, 'Always allowed from the screen');
+      if (k === 'deny') return sendAnswer({ behavior: 'deny' }, 'Denied from the screen');
+    }
+    if (ask.kind === 'question') {
+      const qs = ask.questions || [], q = qs[askState.qi];
+      if (k.startsWith('opt:')) {
+        const label = q.options[+k.slice(4)].label;
+        if (q.multiSelect) { const p = askState.picked; p.includes(label) ? p.splice(p.indexOf(label), 1) : p.push(label); return renderAsk(); }
+        return nextQuestion(label);
+      }
+      if (k === 'done' && askState.picked.length) return nextQuestion(askState.picked.join(', '));
+      return;
+    }
+    if (k === 'yes') return sendAnswer({ text: 'Yes, go ahead.' }, 'Yes, go ahead');
+    if (k === 'seen') return sendAnswer({ dismiss: true });
+  }
+  // Record this question's answer; move to the next question, or send them all.
+  function nextQuestion(value) {
+    const qs = askAgent().ask.questions || [];
+    askState.answers[qs[askState.qi].question] = value; askState.picked = [];
+    if (askState.qi + 1 < qs.length) {
+      askState.qi++; renderAsk();
+      $('#askCard').animate([{ opacity: .4 }, { opacity: 1 }], { duration: D(220), easing: EASE_OUT });
+      return cascade($$('#askGrid .abtn'), 40, 160, 'in');
+    }
+    return sendAnswer({ answers: askState.answers }, `Answered: ${value}`);
+  }
+  // The composer. For a permission prompt, a typed reply denies it and passes your words along;
+  // for a question it becomes that question's answer; after a finished turn it wakes the agent.
+  function openReply() {
+    const a = askAgent(), ask = a?.ask; if (!ask) return go('home');
+    const q = ask.kind === 'question' ? (ask.questions || [])[askState.qi] : null;
+    $('#replyLabel').textContent = ask.kind === 'permission' ? `Tell ${a.name} what to do instead` : q ? `Answer ${a.name}: ${q.question}` : `Reply to ${a.name}`;
+    $('#replyText').value = ''; $('#replySend').disabled = true;
+    try { window.webkit?.messageHandlers?.focus?.postMessage('reply'); } catch {}
+    setTimeout(() => $('#replyText').focus({ preventScroll: true }), D(120));
+  }
+  function sendReply() {
+    const text = $('#replyText').value.trim(), ask = askAgent()?.ask; if (!text || !ask) return;
+    $('#replyText').blur();
+    if (ask.kind === 'permission') return sendAnswer({ behavior: 'deny', message: text }, text);
+    if (ask.kind === 'question') return nextQuestion(text);
+    return sendAnswer({ text }, text);
+  }
+  $('#replyText').addEventListener('input', () => { $('#replySend').disabled = !$('#replyText').value.trim(); });
+  $('#replyText').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); }
+    if (e.key === 'Escape') { e.preventDefault(); go('ask'); }
+  });
+
 
   /* simulator */
   function renderSim() {
@@ -973,7 +1123,7 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
      One canvas per hovered element, drawn in that element's own px (the stage is scaled).
      Each dot = faint shimmering base + a wake from recent pointer positions that spreads and fades.
      Runs only while something is hovered or still fading out; at rest nothing animates. */
-  const HOV = '.fcard, .btn-s, .arcbox, .ag, .mrow, .lrow, .bigbtn, .chipbtn, .fopt';
+  const HOV = '.fcard, .btn-s, .arcbox, .ag, .mrow, .lrow, .bigbtn, .chipbtn, .fopt, .abtn';
   const SHAPE_D = {
     circle: 'M10 50a40 40 0 1 0 80 0a40 40 0 1 0 -80 0Z',
     square: 'M26 12h48a14 14 0 0 1 14 14v48a14 14 0 0 1 -14 14h-48a14 14 0 0 1 -14 -14v-48a14 14 0 0 1 14 -14Z',
@@ -1104,6 +1254,8 @@ body.kiosk .proto-shell .stage-wrap { position: fixed; inset: 0; aspect-ratio: a
     S.agents = list.map(a => ({ ...a, why: a.why || '', job: a.job || '' }));
     if (featured && !S.agents.some(a => a.id === featured)) featured = null;
     if (view === 'agents' && !S.agents.length) { go('home'); return; }
+    if ((view === 'ask' || view === 'reply') && askState && !S.agents.some(a => a.ask?.id === askState.id)) {
+      askState = null; toast('Answered somewhere else'); go('home'); return; }
     syncAll();
   };
   window.lighthouseOpenCapture = () => { if (view === 'capture') return $('#capText').focus(); busy = false; go('capture'); }; // ⌃⌥Space from the kiosk app

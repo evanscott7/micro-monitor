@@ -21,6 +21,7 @@ Design system and clickable prototype: <https://claude.ai/artifact/JvmtdGbPgVHPd
 | `kiosk/build.sh` | Builds `kiosk/build/Lighthouse.app` (needs the Xcode Command Line Tools). |
 | `kiosk/install-login-item.sh` | Starts Lighthouse at login (`uninstall` to undo). |
 | `hooks/lighthouse-hook.sh` | Claude Code hook. Appends one JSON line per event to `~/.lighthouse/events.ndjson`. |
+| `hooks/lighthouse-ask.sh`, `hooks/install-ask-hooks.sh` | Answering agents from the screen (see below). |
 | `docs/` | Research and the design spec extracted from the reference video. |
 
 ## Setup
@@ -38,6 +39,23 @@ Then add the hook to `~/.claude/settings.json` on `SessionStart`, `UserPromptSub
 ```
 
 Sessions that were already running pick the hook up only after a restart.
+
+## Answering agents from the screen
+
+```sh
+hooks/install-ask-hooks.sh        # adds the hooks to ~/.claude/settings.json (backs it up first)
+hooks/install-ask-hooks.sh uninstall
+```
+
+Clicking an agent that needs you opens an answer screen:
+
+- **Permission prompts**: Allow, Always allow (when Claude Code offers a rule), Deny, or Type a reply (denies and passes your words along). Uses the `PermissionRequest` hook.
+- **Questions** (`AskUserQuestion`): each option is a big button, multi-select toggles then Done, and Type an answer covers anything else. Several questions are asked one after another.
+- **After a turn ends**: Yes, go ahead / Type a reply / Mark seen. A reply wakes the idle session (`Stop` hook with `asyncRewake`), delivered as "Evan replied from the Lighthouse screen…".
+
+Permission prompts and questions only wait for the small screen when the big monitor is switched away (only the Wokyis display is connected), because while a hook waits, Claude Code's own prompt doesn't appear. To always answer on the small screen, use the menu-bar item *Answer Prompts Here Even When the Big Screen Is On*. Unanswered prompts fall back to the normal prompt after 30 minutes; reply offers expire after 8 hours or as soon as you type in the session yourself.
+
+Files: the hook writes `~/.lighthouse/asks/<session>.json`, the app writes your answer to `~/.lighthouse/answers/<id>.json`, and `~/.lighthouse/mode.json` says whether prompts should wait for the screen.
 
 ## Data sources
 

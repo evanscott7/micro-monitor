@@ -34,6 +34,11 @@ final class AgentStore {
     var eventsURL: URL { dir.appendingPathComponent("events.ndjson") }
     var shapesURL: URL { dir.appendingPathComponent("shapes.json") }
     private(set) var agents: [String: Agent] = [:]
+    /// Questions waiting for you, one per session, written by hooks/lighthouse-ask.sh.
+    private(set) var asks: [String: [String: Any]] = [:]
+    private var asksKey = ""
+    var asksDir: URL { dir.appendingPathComponent("asks") }
+    var answersDir: URL { dir.appendingPathComponent("answers") }
     private var offset: UInt64 = 0
     private var shapes: [String: String] = [:]   // project name → shape, kept for life
     private let shapeOrder = ["circle", "tri", "square", "hex", "diamond"]
@@ -58,14 +63,15 @@ final class AgentStore {
 
     /// Read whatever was appended since last time. Cheap enough to call every second.
     func poll() {
+        let asksChanged = loadAsks()
         guard let h = try? FileHandle(forReadingFrom: eventsURL) else { return }
         defer { try? h.close() }
         let end = (try? h.seekToEnd()) ?? 0
         if end < offset { offset = 0; agents = [:] }          // file was rotated or truncated
-        guard end > offset else { if prune() { onChange?() }; return }
+        guard end > offset else { if prune() || asksChanged { onChange?() }; return }
         try? h.seek(toOffset: offset)
         let data = h.readDataToEndOfFile()
-        guard let lastNL = data.lastIndex(of: 0x0A) else { return }  // wait for a full line
+        guard let lastNL = data.lastIndex(of: 0x0A) else { if asksChanged { onChange?() }; return }  // wait for a full line
         offset += UInt64(lastNL - data.startIndex + 1)
         var changed = false
         for line in data[data.startIndex...lastNL].split(separator: 0x0A) {
@@ -73,7 +79,42 @@ final class AgentStore {
             changed = apply(obj) || changed
         }
         changed = prune() || changed
-        if changed { onChange?() }
+        if changed || asksChanged { onChange?() }
+    }
+
+    /// Re-read ~/.lighthouse/asks. Asks older than 8 hours are stale (their hook has given up). Returns true if anything changed.
+    private func loadAsks() -> Bool {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: asksDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: answersDir, withIntermediateDirectories: true)
+        var next: [String: [String: Any]] = [:], key = ""
+        let now = Date().timeIntervalSince1970
+        for f in ((try? fm.contentsOfDirectory(at: asksDir, includingPropertiesForKeys: nil)) ?? []).sorted(by: { $0.path < $1.path })
+        where f.pathExtension == "json" {
+            guard let d = try? Data(contentsOf: f), let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let sid = obj["sid"] as? String, let id = obj["id"] as? String else { continue }
+            if now - (obj["t"] as? Double ?? now) > 8 * 3600 { try? fm.removeItem(at: f); continue }
+            next[sid] = obj; key += id + ";"
+        }
+        guard key != asksKey else { return false }
+        asks = next; asksKey = key
+        return true
+    }
+
+    /// Hand your answer to the waiting hook. `dismiss` just clears the ask (you've seen it, nothing to send).
+    func answer(_ body: [String: Any]) {
+        guard let id = body["id"] as? String, let sid = body["sid"] as? String else { return }
+        if body["dismiss"] as? Bool == true {
+            if (asks[sid]?["id"] as? String) == id { try? FileManager.default.removeItem(at: asksDir.appendingPathComponent("\(sid).json")) }
+            acknowledge(sid); return
+        }
+        var payload = body; payload.removeValue(forKey: "id"); payload.removeValue(forKey: "sid")
+        guard let d = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        let tmp = answersDir.appendingPathComponent(".\(id).tmp"), dest = answersDir.appendingPathComponent("\(id).json")
+        try? d.write(to: tmp); try? FileManager.default.moveItem(at: tmp, to: dest)
+        if var a = agents[sid] { a.state = "working"; a.since = Date().timeIntervalSince1970; agents[sid] = a }
+        asks.removeValue(forKey: sid); asksKey = ""   // hide it now; the hook removes the file in a second
+        onChange?()
     }
 
     private func firstLine(_ s: String?) -> String {
@@ -144,7 +185,21 @@ final class AgentStore {
     /// The list the page renders, most urgent first.
     func payload() -> [[String: Any]] {
         let rank = ["needs": 0, "done": 1, "working": 2, "idle": 3]
-        let sorted = agents.values.sorted { (rank[$0.state] ?? 9, -$0.since) < (rank[$1.state] ?? 9, -$1.since) }
+        // A permission prompt or question waiting on the screen makes that agent "needs you", even before
+        // Claude Code's own notification arrives. Asks from sessions we haven't seen yet still show up.
+        var all = agents
+        for (sid, ask) in asks {
+            var a = all[sid] ?? Agent(id: sid, src: "claude", cwd: "", since: ask["t"] as? Double ?? 0, last: ask["t"] as? Double ?? 0)
+            let kind = ask["kind"] as? String ?? ""
+            if kind == "permission" || kind == "question" {
+                if a.state != "needs" { a.since = ask["t"] as? Double ?? a.since }
+                a.state = "needs"
+                if kind == "permission" { a.why = "Wants to use \(ask["tool"] as? String ?? "a tool"): \(ask["summary"] as? String ?? "")" }
+                else if let q = (ask["questions"] as? [[String: Any]])?.first?["question"] as? String { a.why = q }
+            }
+            all[sid] = a
+        }
+        let sorted = all.values.sorted { (rank[$0.state] ?? 9, -$0.since) < (rank[$1.state] ?? 9, -$1.since) }
         var seen: [String: Int] = [:]
         return sorted.map { a in
             let proj = project(a.cwd)
@@ -152,10 +207,12 @@ final class AgentStore {
             let n = seen[proj]!
             let label = String(proj.uppercased().prefix(14)) + (n > 1 ? " \(n)" : "")
             let home = FileManager.default.homeDirectoryForCurrentUser.path
-            return ["id": a.id, "name": label, "shape": shape(for: proj),
+            var row: [String: Any] = ["id": a.id, "name": a.cwd.isEmpty ? "CLAUDE" : label, "shape": shape(for: proj),
                     "src": a.src == "grok" ? "Grok Bot" : "Claude Code",
                     "job": a.cwd.replacingOccurrences(of: home, with: "~"),
                     "why": a.why, "state": a.state, "since": a.since * 1000]
+            if let ask = asks[a.id] { row["ask"] = ask }
+            return row
         }
     }
 }
@@ -254,6 +311,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         config.userContentController.add(self, name: "capture")
         config.userContentController.add(self, name: "agent")
         config.userContentController.add(self, name: "calendar")
+        config.userContentController.add(self, name: "answer")
+        config.userContentController.add(self, name: "focus")
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
         webView.setValue(false, forKey: "drawsBackground")
@@ -312,6 +371,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
         window.setFrame(screen.frame, display: true)
         window.orderFrontRegardless()
+        writeMode()
+    }
+
+    // MARK: answering on the screen
+
+    /// "Answer prompts here even when the big screen is on" (menu-bar item). Off by default.
+    var answerAlways: Bool {
+        get { UserDefaults.standard.bool(forKey: "answerAlways") }
+        set { UserDefaults.standard.set(newValue, forKey: "answerAlways"); writeMode(); alwaysItem?.state = newValue ? .on : .off }
+    }
+    var alwaysItem: NSMenuItem?
+
+    /// Tell hooks/lighthouse-ask.sh whether permission prompts and questions should wait for this screen.
+    /// They do when the big monitor is switched away (only the Wokyis is left) or when you chose "always".
+    /// While the big monitor is here, Claude Code's own prompt shows there as usual.
+    func writeMode() {
+        let others = NSScreen.screens.filter { !$0.localizedName.contains(targetScreenName) }
+        let mode: [String: Any] = ["screenFirst": answerAlways || others.isEmpty, "always": answerAlways, "bigScreen": !others.isEmpty]
+        if let d = try? JSONSerialization.data(withJSONObject: mode) {
+            try? d.write(to: store.dir.appendingPathComponent("mode.json"), options: .atomic)
+        }
+    }
+
+    @objc func toggleAnswerAlways() { answerAlways.toggle() }
+
+    /// Make the window take typing (for the reply composer), the same way ⌃⌥Space does for Capture.
+    func takeKeyboard() {
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(webView)
     }
 
     func setUpStatusItem() {
@@ -321,6 +410,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         menu.addItem(withTitle: "Open Capture  ⌃⌥Space", action: #selector(openCapture), keyEquivalent: "")
         menu.addItem(withTitle: "Reload Screen", action: #selector(reload), keyEquivalent: "r")
         menu.addItem(withTitle: "Show Inbox in Finder", action: #selector(revealInbox), keyEquivalent: "")
+        menu.addItem(.separator())
+        let always = menu.addItem(withTitle: "Answer Prompts Here Even When the Big Screen Is On", action: #selector(toggleAnswerAlways), keyEquivalent: "")
+        always.state = answerAlways ? .on : .off
+        alwaysItem = always
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Lighthouse", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu
@@ -355,6 +448,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Calendar.app"))
             return
         }
+        if message.name == "answer", let body = message.body as? [String: Any] { store.answer(body); return }
+        if message.name == "focus" { takeKeyboard(); return }
         if message.name == "agent", let body = message.body as? [String: Any], let sid = body["id"] as? String {
             // "open": bring Claude forward so you can answer it; "ack": you've seen a finished agent.
             if body["action"] as? String == "open",
